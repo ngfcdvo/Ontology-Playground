@@ -12,6 +12,8 @@ export function QueryPlayground() {
   
   const { 
     currentOntology,
+    entityInstances,
+    relationshipInstances,
     setHighlightedEntities, 
     setHighlightedRelationships, 
     clearHighlights,
@@ -34,7 +36,10 @@ export function QueryPlayground() {
     
     // Simulate processing delay for realistic feel
     setTimeout(() => {
-      const response = processQuery(input, currentOntology);
+      const response = processQuery(input, currentOntology, {
+        entityInstances,
+        relationshipInstances,
+      });
       
       setResult(response.result);
       setInterpretation(response.interpretation || null);
@@ -51,7 +56,7 @@ export function QueryPlayground() {
       
       setIsProcessing(false);
     }, 600);
-  }, [input, currentOntology, setHighlightedEntities, setHighlightedRelationships, activeQuest, currentStepIndex, advanceQuestStep]);
+  }, [input, currentOntology, entityInstances, relationshipInstances, setHighlightedEntities, setHighlightedRelationships, activeQuest, currentStepIndex, advanceQuestStep]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -66,18 +71,71 @@ export function QueryPlayground() {
     clearHighlights();
   };
 
-  // Convert markdown-like formatting to simple HTML-like display
+  // Convert markdown-like formatting to simple HTML-like display.
+  // Handles **bold**, _italic_, and pipe-delimited markdown tables.
   const formatResult = (text: string) => {
-    return text
+    // First, convert markdown tables to HTML tables
+    const html = text
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/_(.+?)_/g, '<em>$1</em>')
-      .split('\n')
-      .map((line, i) => (
-        <span key={i}>
-          <span dangerouslySetInnerHTML={{ __html: line }} />
-          {i < text.split('\n').length - 1 && <br />}
+      .replace(/_(.+?)_/g, '<em>$1</em>');
+
+    // Split into segments: alternating non-table text and table blocks
+    const lines = html.split('\n');
+    const segments: { type: 'text' | 'table'; lines: string[] }[] = [];
+    let current: { type: 'text' | 'table'; lines: string[] } | null = null;
+
+    for (const line of lines) {
+      const isTableRow = /^\|.*\|$/.test(line.trim());
+      const isSeparator = /^\|[\s-:|]+\|$/.test(line.trim());
+
+      if (isTableRow || isSeparator) {
+        if (!current || current.type !== 'table') {
+          if (current) segments.push(current);
+          current = { type: 'table', lines: [] };
+        }
+        if (!isSeparator) current.lines.push(line);
+      } else {
+        if (!current || current.type !== 'text') {
+          if (current) segments.push(current);
+          current = { type: 'text', lines: [] };
+        }
+        current.lines.push(line);
+      }
+    }
+    if (current) segments.push(current);
+
+    return segments.map((seg, si) => {
+      if (seg.type === 'table') {
+        const rows = seg.lines.map(line => {
+          const cells = line.split('|').slice(1, -1).map(c => c.trim());
+          return `<tr>${cells.map(c => `<td style="border:1px solid var(--border-primary);padding:4px 8px">${c}</td>`).join('')}</tr>`;
+        }).join('');
+        return (
+          <table
+            key={`seg-${si}`}
+            style={{
+              borderCollapse: 'collapse',
+              margin: '8px 0',
+              fontSize: 12,
+              width: '100%',
+            }}
+            dangerouslySetInnerHTML={{
+              __html: rows.replace(/<tr>(<td>.*?<\/td>)/, '<tr style="font-weight:600;background:var(--bg-tertiary)">$1'),
+            }}
+          />
+        );
+      }
+      return (
+        <span key={`seg-${si}`}>
+          <span
+            dangerouslySetInnerHTML={{
+              __html: seg.lines.join('\n').replace(/\n/g, '<br />'),
+            }}
+          />
+          {si < segments.length - 1 && <br />}
         </span>
-      ));
+      );
+    });
   };
 
   return (

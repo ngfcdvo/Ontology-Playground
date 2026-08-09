@@ -39,6 +39,16 @@ export interface EntityInstance {
   values: Record<string, unknown>;
 }
 
+export interface RelationshipInstance {
+  id: string;
+  relationshipId: string;
+  // Keys reference entity instances by their identifier property values.
+  // e.g. { customer: 'CUST-001', order: 'ORD-2025-001' }
+  sourceKey: string;
+  targetKey: string;
+  values?: Record<string, unknown>;
+}
+
 export interface Ontology {
   name: string;
   description: string;
@@ -239,6 +249,34 @@ export const sampleInstances: EntityInstance[] = [
   
   // Shipments
   { id: "ship-001", entityTypeId: "shipment", values: { shipmentId: "SHIP-001", dispatchDate: "2025-01-20", arrivalDate: "2025-01-27", status: "Delivered", weight: 250.5 }},
+];
+
+// Sample relationship instances linking entity instances by their identifier values.
+// sourceKey / targetKey hold the *identifier property value* of the source/target entity instance.
+export const sampleRelationshipInstances: RelationshipInstance[] = [
+  // customer_places_order  (customer → order)
+  { id: "ri-001", relationshipId: "customer_places_order", sourceKey: "CUST-001", targetKey: "ORD-2025-001" },
+  { id: "ri-002", relationshipId: "customer_places_order", sourceKey: "CUST-002", targetKey: "ORD-2025-002" },
+
+  // order_contains_product  (order → product) — many-to-many with attributes
+  { id: "ri-003", relationshipId: "order_contains_product", sourceKey: "ORD-2025-001", targetKey: "PROD-001", values: { quantity: 2, customizations: "oat milk" } },
+  { id: "ri-004", relationshipId: "order_contains_product", sourceKey: "ORD-2025-001", targetKey: "PROD-002", values: { quantity: 1, customizations: "" } },
+  { id: "ri-005", relationshipId: "order_contains_product", sourceKey: "ORD-2025-002", targetKey: "PROD-003", values: { quantity: 1, customizations: "extra shot" } },
+
+  // order_processed_at_store  (order → store)
+  { id: "ri-006", relationshipId: "order_processed_at_store", sourceKey: "ORD-2025-001", targetKey: "STORE-001" },
+  { id: "ri-007", relationshipId: "order_processed_at_store", sourceKey: "ORD-2025-002", targetKey: "STORE-002" },
+
+  // product_sourced_from_supplier  (product → supplier)
+  { id: "ri-008", relationshipId: "product_sourced_from_supplier", sourceKey: "PROD-001", targetKey: "SUPP-001" },
+  { id: "ri-009", relationshipId: "product_sourced_from_supplier", sourceKey: "PROD-002", targetKey: "SUPP-002" },
+  { id: "ri-010", relationshipId: "product_sourced_from_supplier", sourceKey: "PROD-003", targetKey: "SUPP-001" },
+
+  // shipment_from_supplier  (shipment → supplier)
+  { id: "ri-011", relationshipId: "shipment_from_supplier", sourceKey: "SHIP-001", targetKey: "SUPP-001" },
+
+  // shipment_to_store  (shipment → store)
+  { id: "ri-012", relationshipId: "shipment_to_store", sourceKey: "SHIP-001", targetKey: "STORE-001" },
 ];
 
 // Sample data bindings showing connection to a data lakehouse platform

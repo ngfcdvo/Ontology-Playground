@@ -3,7 +3,8 @@ import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import type { Core, EventObject, LayoutOptions } from 'cytoscape';
 import { useAppStore } from '../store/appStore';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download, Crosshair } from 'lucide-react';
+import type { EntityInstance, RelationshipInstance, EntityType } from '../data/ontology';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Download, Crosshair, Boxes, Share2 } from 'lucide-react';
 
 // Register fcose layout
 cytoscape.use(fcose);
@@ -31,6 +32,98 @@ function readGraphColors(darkMode: boolean, el?: HTMLElement | null): GraphColor
     edgeText: cs.getPropertyValue('--graph-edge-text').trim() || fallback.edgeText,
     edgeLabelBg: cs.getPropertyValue('--graph-edge-label-bg').trim() || fallback.edgeLabelBg,
   };
+}
+
+// ── Instance-view helpers ──────────────────────────────────────────────────
+
+/** Build a unique Cytoscape node id for an entity instance. */
+function instanceNodeId(entityTypeId: string, instanceKey: string): string {
+  return `inst:${entityTypeId}:${instanceKey}`;
+}
+
+/** Find the identifier property name of an entity type (falls back to first). */
+function identifierPropOf(entity: EntityType): string | undefined {
+  return (entity.properties.find(p => p.isIdentifier) ?? entity.properties[0])?.name;
+}
+
+/** Get the identifier value of an instance (by entity type's identifier prop). */
+function instanceKeyValue(entity: EntityType, inst: EntityInstance): string {
+  const idProp = identifierPropOf(entity);
+  return idProp ? String(inst.values[idProp] ?? '') : inst.id;
+}
+
+/** Pick a human-readable label for an instance (prefer non-id string values). */
+function instanceDisplayLabel(entity: EntityType, inst: EntityInstance): string {
+  const idProp = identifierPropOf(entity);
+  for (const [name, v] of Object.entries(inst.values)) {
+    if (typeof v === 'string' && v.length > 1 && name !== idProp) {
+      return v;
+    }
+  }
+  const key = instanceKeyValue(entity, inst);
+  return key || inst.id;
+}
+
+/** Build Cytoscape elements for the instance view: instance nodes + instance edges. */
+function buildInstanceElements(
+  ontology: { entityTypes: EntityType[]; relationships: Array<{ id: string; name: string; from: string; to: string }> },
+  entityInstances: EntityInstance[],
+  relationshipInstances: RelationshipInstance[],
+) {
+  const entityById = new Map(ontology.entityTypes.map(e => [e.id, e]));
+
+  // Build instance nodes with stable ids: "inst:<entityTypeId>:<keyValue>"
+  const nodes = entityInstances.map(inst => {
+    const entity = entityById.get(inst.entityTypeId);
+    const fallbackColor = '#888888';
+    const label = entity
+      ? `${entity.icon} ${instanceDisplayLabel(entity, inst)}`
+      : inst.id;
+    const key = entity ? instanceKeyValue(entity, inst) : inst.id;
+    return {
+      data: {
+        id: instanceNodeId(inst.entityTypeId, key),
+        label,
+        name: label,
+        color: entity?.color ?? fallbackColor,
+        icon: entity?.icon ?? '•',
+        type: 'instance',
+        entityTypeId: inst.entityTypeId,
+        instanceKey: key,
+      }
+    };
+  });
+
+  const nodeIds = new Set(nodes.map(n => n.data.id));
+
+  // Build instance edges from relationship instances.
+  // sourceKey/targetKey reference identifier values; resolve to node ids.
+  const edges: Array<{ data: Record<string, unknown> }> = [];
+  for (const ri of relationshipInstances) {
+    const rel = ontology.relationships.find(r => r.id === ri.relationshipId);
+    if (!rel) continue;
+    const fromEntity = entityById.get(rel.from);
+    const toEntity = entityById.get(rel.to);
+    if (!fromEntity || !toEntity) continue;
+    const sourceId = instanceNodeId(rel.from, ri.sourceKey);
+    const targetId = instanceNodeId(rel.to, ri.targetKey);
+    if (!nodeIds.has(sourceId) || !nodeIds.has(targetId)) continue;
+    const attrStr = ri.values
+      ? ` (${Object.entries(ri.values).map(([k, v]) => `${k}=${v}`).join(', ')})`
+      : '';
+    edges.push({
+      data: {
+        id: `ri:${ri.id}`,
+        source: sourceId,
+        target: targetId,
+        label: `${rel.name}${attrStr}`,
+        type: 'instance-relationship',
+        relationshipId: ri.id,
+      }
+    });
+  }
+
+  return [...nodes, ...edges];
 }
 
 export function OntologyGraph() {
@@ -65,7 +158,13 @@ export function OntologyGraph() {
     currentStepIndex,
     advanceQuestStep,
     darkMode,
-    theme
+    theme,
+    entityInstances,
+    relationshipInstances,
+    graphViewMode,
+    selectedInstanceKey,
+    setGraphViewMode,
+    selectInstance
   } = useAppStore();
 
   // Use refs for quest state to avoid re-creating the graph when quest changes
@@ -90,8 +189,16 @@ export function OntologyGraph() {
   // Initial theme colors for graph creation
   const initialThemeColors = useRef(themeColors);
 
-  // Build graph elements from ontology
+  // Build graph elements from ontology — schema view (entity types) or
+  // instance view (actual records linked by relationship instances).
   const buildElements = useCallback(() => {
+    if (graphViewMode === 'instance') {
+      return buildInstanceElements(
+        currentOntology,
+        entityInstances,
+        relationshipInstances,
+      );
+    }
     const nodes = currentOntology.entityTypes.map(entity => ({
       data: {
         id: entity.id,
@@ -121,7 +228,7 @@ export function OntologyGraph() {
       }));
 
     return [...nodes, ...edges];
-  }, [currentOntology]);
+  }, [currentOntology, graphViewMode, entityInstances, relationshipInstances]);
 
   // Initialize Cytoscape
   useEffect(() => {
@@ -262,9 +369,19 @@ export function OntologyGraph() {
 
     // Event handlers
     cy.on('tap', 'node', (evt: EventObject) => {
-      const nodeId = evt.target.id();
+      const node = evt.target;
+      const nodeId = node.id();
+      const nodeData = node.data();
+
+      // In instance view, select instance and highlight its neighbourhood
+      if (nodeData.type === 'instance') {
+        const key = `${nodeData.entityTypeId}:${nodeData.instanceKey}`;
+        selectInstance(key);
+        return;
+      }
+
       selectEntity(nodeId);
-      
+
       // Check if this advances a quest step (use refs to avoid re-creating graph)
       const quest = activeQuestRef.current;
       const stepIndex = currentStepIndexRef.current;
@@ -277,9 +394,17 @@ export function OntologyGraph() {
     });
 
     cy.on('tap', 'edge', (evt: EventObject) => {
-      const edgeId = evt.target.id();
+      const edge = evt.target;
+      const edgeId = edge.id();
+      const edgeData = edge.data();
+
+      // In instance view, edges are relationship instances — no quest logic
+      if (edgeData.type === 'instance-relationship') {
+        return;
+      }
+
       selectRelationship(edgeId);
-      
+
       // Check if this advances a quest step (use refs to avoid re-creating graph)
       const quest = activeQuestRef.current;
       const stepIndex = currentStepIndexRef.current;
@@ -302,6 +427,7 @@ export function OntologyGraph() {
         }
         selectEntity(null);
         selectRelationship(null);
+        selectInstance(null);
       }
     });
 
@@ -352,7 +478,7 @@ export function OntologyGraph() {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [buildElements, selectEntity, selectRelationship]);
+  }, [buildElements, selectEntity, selectRelationship, selectInstance]);
 
   // Keep focusNodeIdRef in sync with state
   useEffect(() => {
@@ -398,6 +524,30 @@ export function OntologyGraph() {
     const cy = getCy();
     if (!cy) return;
 
+    // Instance view: highlight selected instance's neighbourhood
+    if (graphViewMode === 'instance') {
+      try {
+        cy.elements().removeClass('highlighted dimmed');
+        cy.elements().unselect();
+        if (selectedInstanceKey) {
+          const [entityTypeId, ...keyParts] = selectedInstanceKey.split(':');
+          const instanceKey = keyParts.join(':');
+          const nodeId = instanceNodeId(entityTypeId, instanceKey);
+          const node = cy.getElementById(nodeId);
+          if (node.length) {
+            node.select();
+            const connectedEdges = node.connectedEdges();
+            const connectedNodes = connectedEdges.connectedNodes();
+            cy.elements().addClass('dimmed');
+            node.removeClass('dimmed');
+            connectedEdges.removeClass('dimmed');
+            connectedNodes.removeClass('dimmed');
+          }
+        }
+      } catch { /* ignore */ }
+      return;
+    }
+
     // If focus mode is active, let the focus effect manage dimming
     if (focusNodeIdRef.current !== null) {
       // Just update selection highlight without touching dimmed
@@ -440,7 +590,7 @@ export function OntologyGraph() {
     } catch {
       // Graph may have been destroyed
     }
-  }, [selectedEntityId, selectedRelationshipId, getCy]);
+  }, [selectedEntityId, selectedRelationshipId, graphViewMode, selectedInstanceKey, getCy]);
 
   // Handle highlights from queries
   useEffect(() => {
@@ -558,6 +708,29 @@ export function OntologyGraph() {
         </div>
       )}
       
+      <div className="graph-view-toggle">
+        <button
+          className={`graph-view-btn ${graphViewMode === 'schema' ? 'active' : ''}`}
+          onClick={() => setGraphViewMode('schema')}
+          title="Schema view — entity types and relationship types"
+        >
+          <Share2 size={15} />
+          <span>Schema</span>
+        </button>
+        <button
+          className={`graph-view-btn ${graphViewMode === 'instance' ? 'active' : ''}`}
+          onClick={() => setGraphViewMode('instance')}
+          title="Instance view — actual records and their links"
+          disabled={entityInstances.length === 0}
+        >
+          <Boxes size={15} />
+          <span>Instances</span>
+          {entityInstances.length > 0 && (
+            <span className="graph-view-count">{entityInstances.length}</span>
+          )}
+        </button>
+      </div>
+
       <div className="graph-controls">
         <button className="graph-control-btn" onClick={handleZoomIn} title="Zoom In">
           <ZoomIn size={18} />
@@ -577,13 +750,26 @@ export function OntologyGraph() {
       </div>
 
       <div className="graph-legend">
-        <div className="legend-title">Entity Types</div>
-        {currentOntology.entityTypes.map(entity => (
-          <div key={entity.id} className="legend-item">
-            <div className="legend-dot" style={{ backgroundColor: entity.color }} />
-            <span>{entity.icon} {entity.name}</span>
-          </div>
-        ))}
+        <div className="legend-title">
+          {graphViewMode === 'instance' ? 'Instances by Entity' : 'Entity Types'}
+        </div>
+        {currentOntology.entityTypes.map(entity => {
+          const count = graphViewMode === 'instance'
+            ? entityInstances.filter(i => i.entityTypeId === entity.id).length
+            : 0;
+          return (
+            <div key={entity.id} className="legend-item">
+              <div className="legend-dot" style={{ backgroundColor: entity.color }} />
+              <span>{entity.icon} {entity.name}</span>
+              {graphViewMode === 'instance' && count > 0 && (
+                <span className="legend-count">{count}</span>
+              )}
+            </div>
+          );
+        })}
+        {graphViewMode === 'instance' && entityInstances.length === 0 && (
+          <div className="legend-empty">No instance data loaded for this ontology.</div>
+        )}
       </div>
     </div>
   );

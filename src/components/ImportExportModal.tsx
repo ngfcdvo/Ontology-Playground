@@ -44,7 +44,7 @@ const sampleSchema = `{
 }`;
 
 export function ImportExportModal({ onClose, onFabricPush }: ImportExportModalProps) {
-  const { currentOntology, dataBindings, loadOntology, resetToDefault, exportOntology } = useAppStore();
+  const { currentOntology, dataBindings, entityInstances, relationshipInstances, loadOntology, resetToDefault, exportOntology } = useAppStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -217,6 +217,34 @@ export function ImportExportModal({ onClose, onFabricPush }: ImportExportModalPr
     for (const entity of currentOntology.entityTypes) {
       for (const prop of entity.properties) {
         csv += `"${entity.id}","${prop.name}","${prop.type}","${prop.isIdentifier || false}"\n`;
+      }
+    }
+
+    // Entity instances (actual records)
+    if (entityInstances.length > 0) {
+      csv += '\n# ENTITY INSTANCES (sample data)\n';
+      csv += 'entity_type_id,instance_id,property_name,value\n';
+      for (const inst of entityInstances) {
+        for (const [propName, value] of Object.entries(inst.values)) {
+          const v = value === null || value === undefined ? '' : String(value);
+          csv += `"${inst.entityTypeId}","${inst.id}","${propName}","${v.replace(/"/g, '""')}"\n`;
+        }
+      }
+    }
+
+    // Relationship instances (actual links between records)
+    if (relationshipInstances.length > 0) {
+      csv += '\n# RELATIONSHIP INSTANCES (sample links)\n';
+      csv += 'relationship_id,source_key,target_key,attribute_name,attribute_value\n';
+      for (const ri of relationshipInstances) {
+        if (!ri.values || Object.keys(ri.values).length === 0) {
+          csv += `"${ri.relationshipId}","${ri.sourceKey}","${ri.targetKey}","",""\n`;
+        } else {
+          for (const [attrName, attrVal] of Object.entries(ri.values)) {
+            const v = attrVal === null || attrVal === undefined ? '' : String(attrVal);
+            csv += `"${ri.relationshipId}","${ri.sourceKey}","${ri.targetKey}","${attrName}","${v.replace(/"/g, '""')}"\n`;
+          }
+        }
       }
     }
 

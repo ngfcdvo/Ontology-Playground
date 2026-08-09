@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import type { Quest } from '../data/quests';
 import { quests as defaultQuests } from '../data/quests';
-import type { Ontology, DataBinding } from '../data/ontology';
-import { cosmicCoffeeOntology, sampleBindings } from '../data/ontology';
+import type { Ontology, DataBinding, EntityInstance, RelationshipInstance } from '../data/ontology';
+import { cosmicCoffeeOntology, sampleBindings, sampleInstances, sampleRelationshipInstances } from '../data/ontology';
 import { generateQuestsForOntology } from '../data/questGenerator';
 
 export type ThemeId = 'dark' | 'light' | 'aurora' | 'crimson';
@@ -60,6 +60,8 @@ interface AppState {
   // Ontology State
   currentOntology: Ontology;
   dataBindings: DataBinding[];
+  entityInstances: EntityInstance[];
+  relationshipInstances: RelationshipInstance[];
   
   // UI State
   selectedEntityId: string | null;
@@ -67,6 +69,8 @@ interface AppState {
   highlightedEntities: string[];
   highlightedRelationships: string[];
   showDataBindings: boolean;
+  graphViewMode: 'schema' | 'instance';
+  selectedInstanceKey: string | null; // "entityTypeId:identifierValue" in instance view
   theme: ThemeId;
   darkMode: boolean;
   
@@ -93,6 +97,8 @@ interface AppState {
   setHighlightedEntities: (ids: string[]) => void;
   setHighlightedRelationships: (ids: string[]) => void;
   setHighlights: (entityIds: string[], relIds: string[]) => void;
+  setGraphViewMode: (mode: 'schema' | 'instance') => void;
+  selectInstance: (key: string | null) => void;
   toggleDataBindings: () => void;
   setTheme: (theme: ThemeId) => void;
   toggleDarkMode: () => void;
@@ -113,6 +119,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Initial Ontology State
   currentOntology: cosmicCoffeeOntology,
   dataBindings: sampleBindings,
+  entityInstances: sampleInstances,
+  relationshipInstances: sampleRelationshipInstances,
   
   // Initial UI State
   selectedEntityId: null,
@@ -120,6 +128,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   highlightedEntities: [],
   highlightedRelationships: [],
   showDataBindings: false,
+  graphViewMode: 'schema',
+  selectedInstanceKey: null,
   theme: initialTheme,
   darkMode: isDarkTheme(initialTheme),
   
@@ -142,10 +152,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       currentOntology: ontology,
       dataBindings: bindings,
+      // Reset instance data — loaded ontologies (e.g. from catalogue) don't
+      // carry sample instances. Only the default Fourth Coffee ontology has them.
+      entityInstances: [],
+      relationshipInstances: [],
       selectedEntityId: null,
       selectedRelationshipId: null,
       highlightedEntities: [],
       highlightedRelationships: [],
+      graphViewMode: 'schema',
+      selectedInstanceKey: null,
       activeQuest: null,
       currentStepIndex: 0,
       availableQuests: newQuests,
@@ -157,10 +173,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetToDefault: () => set({
     currentOntology: cosmicCoffeeOntology,
     dataBindings: sampleBindings,
+    entityInstances: sampleInstances,
+    relationshipInstances: sampleRelationshipInstances,
     selectedEntityId: null,
     selectedRelationshipId: null,
     highlightedEntities: [],
     highlightedRelationships: [],
+    graphViewMode: 'schema',
+    selectedInstanceKey: null,
     availableQuests: defaultQuests,
     activeQuest: null,
     currentStepIndex: 0,
@@ -186,6 +206,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHighlightedEntities: (ids) => set({ highlightedEntities: ids }),
   setHighlightedRelationships: (ids) => set({ highlightedRelationships: ids }),
   setHighlights: (entityIds, relIds) => set({ highlightedEntities: entityIds, highlightedRelationships: relIds }),
+  setGraphViewMode: (mode) => set({ graphViewMode: mode, selectedInstanceKey: null, selectedEntityId: null, selectedRelationshipId: null, highlightedEntities: [], highlightedRelationships: [] }),
+  selectInstance: (key) => set({ selectedInstanceKey: key, selectedEntityId: null, selectedRelationshipId: null }),
   
   toggleDataBindings: () => set((state) => ({ showDataBindings: !state.showDataBindings })),
   setTheme: (theme) => {
@@ -255,3 +277,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setQueryResult: (result) => set({ queryResult: result }),
   clearHighlights: () => set({ highlightedEntities: [], highlightedRelationships: [] })
 }));
+
+// (HMR 注：Zustand store 初始值在模块加载时确定。
+// 如果改了 store 的初始状态，请硬刷新浏览器 Ctrl+Shift+R 重新初始化。)

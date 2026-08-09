@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { processQuery } from './queryEngine';
-import type { Ontology } from './ontology';
+import type { Ontology, EntityInstance, RelationshipInstance } from './ontology';
+// import { cosmicCoffeeOntology, sampleInstances, sampleRelationshipInstances } from './ontology';
 
 const testOntology: Ontology = {
   name: 'Incident Management Ontology',
@@ -14,6 +15,7 @@ const testOntology: Ontology = {
       color: '#E74C3C',
       properties: [
         { name: 'serviceId', type: 'string', isIdentifier: true },
+        { name: 'name', type: 'string' },
       ],
     },
     {
@@ -24,6 +26,7 @@ const testOntology: Ontology = {
       color: '#00A9E0',
       properties: [
         { name: 'ciId', type: 'string', isIdentifier: true },
+        { name: 'name', type: 'string' },
       ],
     },
     {
@@ -73,5 +76,107 @@ describe('processQuery', () => {
     expect(response.interpretation).toContain('relationship-name query for is supported by');
     expect(response.result).toContain('connects **Service** to **ConfigurationItem**');
     expect(response.highlightRelationships).toEqual(['service_supported_by_configuration_item']);
+  });
+});
+
+describe('processQuery with instance data', () => {
+  const testInstances: EntityInstance[] = [
+    { id: 'svc-1', entityTypeId: 'service', values: { serviceId: 'SVC-1', name: 'Web App' } },
+    { id: 'ci-1', entityTypeId: 'configurationitem', values: { ciId: 'CI-1', name: 'Server A' } },
+  ];
+  const testRelInstances: RelationshipInstance[] = [
+    { id: 'ri-1', relationshipId: 'service_supported_by_configuration_item', sourceKey: 'SVC-1', targetKey: 'CI-1' },
+  ];
+
+  it('returns actual instance records for entity listing queries', () => {
+    const response = processQuery('Show me all services', testOntology, {
+      entityInstances: testInstances,
+      relationshipInstances: [],
+    });
+
+    expect(response.interpretation).toContain('query for Service');
+    expect(response.result).toContain('1 Service record(s)');
+    expect(response.result).toContain('SVC-1');
+    expect(response.result).toContain('Web App');
+    expect(response.result).not.toContain('In a real deployment');
+  });
+
+  it('falls back gracefully when no instances are available', () => {
+    const response = processQuery('Show me all services', testOntology);
+
+    expect(response.result).toContain('No sample service instances loaded');
+    expect(response.result).toContain('In a real deployment');
+  });
+
+  it('returns actual relationship links for relationship-name queries', () => {
+    const response = processQuery('Show me all is supported by connections', testOntology, {
+      entityInstances: testInstances,
+      relationshipInstances: testRelInstances,
+    });
+
+    expect(response.result).toContain('1 link(s)');
+    expect(response.result).toContain('Web App');
+    expect(response.result).toContain('Server A');
+  });
+
+  it('returns actual count for counting queries', () => {
+    const response = processQuery('How many services?', testOntology, {
+      entityInstances: testInstances,
+      relationshipInstances: [],
+    });
+
+    expect(response.result).toContain('**1** Service record(s)');
+    expect(response.result).not.toContain('In production');
+  });
+});
+
+describe('processQuery instance-filter queries (Fourth Coffee)', () => {
+  it('finds orders for a customer by name', () => {
+    const response = processQuery('Show orders for Arif', cosmicCoffeeOntology, {
+      entityInstances: sampleInstances,
+      relationshipInstances: sampleRelationshipInstances,
+    });
+
+    expect(response.interpretation).toContain('instance-filter query');
+    expect(response.interpretation).toContain('Customer');
+    expect(response.interpretation).toContain('arif');
+    // Should mention the order that Arif placed
+    expect(response.result).toContain('ORD-2025-001');
+    // Should mention the relationship "places"
+    expect(response.result.toLowerCase()).toContain('places');
+  });
+
+  it('finds products in a specific order by id', () => {
+    const response = processQuery('What products in ORD-2025-001', cosmicCoffeeOntology, {
+      entityInstances: sampleInstances,
+      relationshipInstances: sampleRelationshipInstances,
+    });
+
+    expect(response.interpretation).toContain('Order');
+    expect(response.interpretation).toContain('ord-2025-001');
+    // ORD-2025-001 contains PROD-001 and PROD-002
+    expect(response.result).toContain('PROD-001');
+    expect(response.result).toContain('PROD-002');
+  });
+
+  it('finds supplier of a product by id', () => {
+    const response = processQuery('Show supplier of PROD-001', cosmicCoffeeOntology, {
+      entityInstances: sampleInstances,
+      relationshipInstances: sampleRelationshipInstances,
+    });
+
+    expect(response.interpretation).toContain('Product');
+    // PROD-001 is sourced from SUPP-001
+    expect(response.result).toContain('SUPP-001');
+  });
+
+  it('returns no-match message for unknown instance value', () => {
+    const response = processQuery('Show orders for nonexistent', cosmicCoffeeOntology, {
+      entityInstances: sampleInstances,
+      relationshipInstances: sampleRelationshipInstances,
+    });
+
+    expect(response.result).toContain('No');
+    expect(response.result).toContain('nonexistent');
   });
 });

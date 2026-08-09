@@ -1,4 +1,4 @@
-import type { Ontology } from './ontology';
+import type { Ontology, EntityInstance, RelationshipInstance, EntityType } from './ontology';
 import { nlQueryResponses } from './quests';
 
 export interface QueryResponse {
@@ -7,6 +7,11 @@ export interface QueryResponse {
   highlightEntities: string[];
   highlightRelationships: string[];
   interpretation?: string;
+}
+
+export interface QueryContext {
+  entityInstances?: EntityInstance[];
+  relationshipInstances?: RelationshipInstance[];
 }
 
 function stripLeadingArticle(text: string): string {
@@ -66,12 +71,188 @@ export function generateQuerySuggestions(ontology: Ontology): string[] {
   return [...new Set(suggestions)].slice(0, 6);
 }
 
+// ── Instance-data helpers ──────────────────────────────────────────────────
+
+/** Find the identifier property name of an entity type (falls back to first property). */
+function identifierPropOf(entity: EntityType): string | undefined {
+  return (entity.properties.find(p => p.isIdentifier) ?? entity.properties[0])?.name;
+}
+
+/** Format a set of entity instances as a markdown-style table for query results. */
+function formatInstanceTable(
+  entity: EntityType,
+  instances: EntityInstance[],
+  maxRows = 10,
+): string {
+  if (instances.length === 0) {
+    return `_No ${entity.name.toLowerCase()} records found in the sample data._`;
+  }
+  const props = entity.properties.slice(0, 5);
+  const header = `| ${props.map(p => p.name).join(' | ')} |`;
+  const separator = `| ${props.map(() => '---').join(' | ')} |`;
+  const rows = instances.slice(0, maxRows).map(inst => {
+    const cells = props.map(p => {
+      const v = inst.values[p.name];
+      if (v === undefined || v === null) return '';
+      return typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v);
+    });
+    return `| ${cells.join(' | ')} |`;
+  });
+  const truncated = instances.length > maxRows
+    ? `\n\n_...and ${instances.length - maxRows} more._`
+    : '';
+  return `${header}\n${separator}\n${rows.join('\n')}${truncated}`;
+}
+
+/** Find identifier value of an entity instance (by entity type's identifier prop). */
+function instanceKey(entity: EntityType, inst: EntityInstance): string {
+  const idProp = identifierPropOf(entity);
+  return idProp ? String(inst.values[idProp] ?? '') : inst.id;
+}
+
+/** Pick a human-readable label for an instance (prefer non-id string values, fall back to key). */
+function instanceLabel(entity: EntityType, inst: EntityInstance, fallbackKey: string): string {
+  const idProp = identifierPropOf(entity);
+  for (const [name, v] of Object.entries(inst.values)) {
+    if (typeof v === 'string' && v.length > 1 && name !== idProp) {
+      return v;
+    }
+  }
+  return fallbackKey;
+}
+
+/** Format relationship instances between two entity types as a readable list. */
+function formatRelationshipLinks(
+  fromEntity: EntityType,
+  toEntity: EntityType,
+  fromInstances: EntityInstance[],
+  toInstances: EntityInstance[],
+  relInstances: RelationshipInstance[],
+  relName: string,
+  maxRows = 10,
+): string {
+  if (relInstances.length === 0) {
+    return `_No "${relName}" links found in the sample data._`;
+  }
+  const fromByKey = new Map(fromInstances.map(i => [instanceKey(fromEntity, i), i]));
+  const toByKey = new Map(toInstances.map(i => [instanceKey(toEntity, i), i]));
+
+  const rows = relInstances.slice(0, maxRows).map(ri => {
+    const src = fromByKey.get(ri.sourceKey);
+    const tgt = toByKey.get(ri.targetKey);
+    const srcLabel = src ? instanceLabel(fromEntity, src, ri.sourceKey) : ri.sourceKey;
+    const tgtLabel = tgt ? instanceLabel(toEntity, tgt, ri.targetKey) : ri.targetKey;
+    const attrs = ri.values
+      ? ` (${Object.entries(ri.values).map(([k, v]) => `${k}=${v}`).join(', ')})`
+      : '';
+    return `• **${srcLabel}** → ${relName} → **${tgtLabel}**${attrs}`;
+  });
+  const truncated = relInstances.length > maxRows
+    ? `\n\n_...and ${relInstances.length - maxRows} more._`
+    : '';
+  return `${rows.join('\n')}${truncated}`;
+}
+
+/**
+ * Detect instance-filter queries like:
+ *   "Show orders for Arif" / "orders for CUST-001"
+ *   "What products in ORD-2025-001" / "products in ORD-2025-001"
+ *   "Which customer placed ORD-2025-001" / "who placed ORD-2025-001"
+ *   "supplier of PROD-001" / "suppliers for PROD-001"
+ *
+ * Returns the target entity type, the filter value (lowercased string), and
+ * optionally a relationship keyword if the query mentions a relationship name
+ * (e.g. "placed", "contains", "from", "sourced").
+ */
+function matchInstanceFilterQuery(
+  normalized: string,
+  entities: EntityType[],
+  entityInstances: EntityInstance[],
+): { targetEntity: EntityType; filterValue: string; relKeyword?: string } | null {
+  // Collect all known instance string values (lowercased) → entity type.
+  const valueToEntity = new Map<string, EntityType>();
+  for (const inst of entityInstances) {
+    const entity = entities.find(e => e.id === inst.entityTypeId);
+    if (!entity) continue;
+    for (const v of Object.values(inst.values)) {
+      if (typeof v === 'string' && v.trim().length > 1) {
+        valueToEntity.set(v.toLowerCase(), entity);
+      }
+    }
+  }
+
+  // Patterns: "for <value>", "in <value>", "of <value>", "by <value>", "from <value>"
+  // Also "who <rel> <value>", "which <entity> <rel> <value>"
+  const prepositions = ['for', 'in', 'of', 'by', 'from'];
+  const words = normalized.split(/\s+/);
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (prepositions.includes(word) && i + 1 < words.length) {
+      // The filter value could be multi-word (e.g. "Arif Ramadhan"), so
+      // try progressively longer suffixes starting from the next word.
+      const remaining = words.slice(i + 1).join(' ');
+      // Strip trailing punctuation
+      const candidate = remaining.replace(/[?!.]+$/g, '').trim();
+      if (!candidate) continue;
+
+      // Try exact match first, then progressively shorter prefixes (for
+      // multi-word names followed by extra words).
+      const candidates = [candidate];
+      for (let end = candidate.length - 1; end > 1; end--) {
+        const sub = candidate.slice(0, end).replace(/[\s-]+$/g, '').trim();
+        if (sub.length > 1) candidates.push(sub);
+      }
+
+      for (const c of candidates) {
+        const entity = valueToEntity.get(c.toLowerCase());
+        if (entity) {
+          // Check if there's a relationship keyword before the preposition.
+          // e.g. "orders placed for Arif" → keyword "placed"
+          let relKeyword: string | undefined;
+          if (i >= 2) {
+            const beforePrep = words.slice(Math.max(0, i - 3), i).join(' ');
+            // Match against relationship names (normalized: remove spaces)
+            for (const e of entities) {
+              // no relationship list here; we'll just capture the word before
+            }
+            // Simpler: grab the word immediately before the preposition
+            const prev = words[i - 1];
+            if (prev && prev.length > 2 && !['show', 'list', 'what', 'which', 'all', 'the', 'a', 'an'].includes(prev)) {
+              relKeyword = prev.replace(/[^a-z]/g, '');
+            }
+          }
+          return { targetEntity: entity, filterValue: c.toLowerCase(), relKeyword };
+        }
+      }
+    }
+  }
+
+  // Also handle "who placed <value>" / "which customer placed <value>"
+  // where the verb comes before the value without a preposition.
+  // e.g. "who placed ORD-2025-001"
+  const verbMatch = normalized.match(/(?:who|which)\s+(\w+)\s+(.+)/);
+  if (verbMatch) {
+    const verb = verbMatch[1];
+    const value = verbMatch[2].replace(/[?!.]+$/g, '').trim();
+    const entity = valueToEntity.get(value.toLowerCase());
+    if (entity) {
+      return { targetEntity: entity, filterValue: value.toLowerCase(), relKeyword: verb };
+    }
+  }
+
+  return null;
+}
+
+
 // Process a natural language query against the ontology
-export function processQuery(query: string, ontology: Ontology): QueryResponse {
+export function processQuery(query: string, ontology: Ontology, context?: QueryContext): QueryResponse {
   const normalizedQuery = query.toLowerCase().trim();
   const normalizedNoPunctuation = normalizedQuery.replace(/[?!.:,;]+/g, '').trim();
   const entities = ontology.entityTypes;
   const relationships = ontology.relationships;
+  const entityInstances = context?.entityInstances ?? [];
+  const relationshipInstances = context?.relationshipInstances ?? [];
 
   if (ontology.name === 'Fourth Coffee') {
     const demoResponse = nlQueryResponses.find(response =>
@@ -150,7 +331,7 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
     }
   }
 
-  // Entity listing queries
+  // Entity listing queries — return actual instance data when available
   for (const entity of entities) {
     const entityNameLower = entity.name.toLowerCase();
     const entityNamePlural = entityNameLower + 's';
@@ -163,14 +344,15 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
       normalizedQuery.includes(`show ${entityNamePlural}`) ||
       normalizedQuery.includes(`list ${entityNamePlural}`)
     ) {
-      const propList = entity.properties
-        .slice(0, 4)
-        .map(p => `• **${p.name}** (${p.type})${p.isIdentifier ? ' 🔑' : ''}`)
-        .join('\n');
+      const matched = entityInstances.filter(i => i.entityTypeId === entity.id);
+      const table = formatInstanceTable(entity, matched);
+      const summary = matched.length > 0
+        ? `**${matched.length} ${entity.name} record(s):**\n\n${table}`
+        : `**${entity.name}** ${entity.icon}\n${entity.description}\n\n_No sample ${entityNameLower} instances loaded. In a real deployment, this would query the data platform for actual ${entityNameLower} records._`;
       
       return {
         query,
-        result: `**${entity.name}** ${entity.icon}\n${entity.description}\n\n**Properties:**\n${propList}\n\n_In a real deployment, this would query the data platform for actual ${entityNameLower} records._`,
+        result: summary,
         highlightEntities: [entity.id],
         highlightRelationships: [],
         interpretation: `Detected: query for ${entity.name} entities`
@@ -178,7 +360,97 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
     }
   }
 
-  // Relationship/connection queries
+  // Instance-filtered queries: "Show orders for <value>", "What products in <value>",
+  // "Which customer placed <value>", etc. — traverse relationship instances.
+  if (entityInstances.length > 0 && relationshipInstances.length > 0) {
+    const instanceMatch = matchInstanceFilterQuery(normalizedNoPunctuation, entities, entityInstances);
+    if (instanceMatch) {
+      const { targetEntity, filterValue, relKeyword } = instanceMatch;
+      // Find relationships whose from or to is the target entity.
+      const candidateRels = relationships.filter(r =>
+        r.from === targetEntity.id || r.to === targetEntity.id
+      );
+      // Find the target instance(s) whose property value matches filterValue.
+      const matchedTargetInstances = entityInstances.filter(
+        i => i.entityTypeId === targetEntity.id &&
+          Object.values(i.values).some(v => typeof v === 'string' && v.toLowerCase() === filterValue)
+      );
+
+      if (matchedTargetInstances.length === 0) {
+        return {
+          query,
+          result: `No **${targetEntity.name}** record found matching "${filterValue}".`,
+          highlightEntities: [targetEntity.id],
+          highlightRelationships: [],
+          interpretation: `Detected: instance-filter query, no match for "${filterValue}"`,
+        };
+      }
+
+      // For each matched target instance, find connected instances via relationship instances.
+      const lines: string[] = [];
+      const relatedEntityIds = new Set<string>();
+      const relatedRelIds = new Set<string>();
+      for (const targetInst of matchedTargetInstances) {
+        const targetKey = instanceKey(targetEntity, targetInst);
+        const targetLabel = instanceLabel(targetEntity, targetInst, targetKey);
+        lines.push(`**${targetLabel}** (${targetEntity.name}):`);
+
+        for (const rel of candidateRels) {
+          const isOutgoing = rel.from === targetEntity.id;
+          const otherEntityId = isOutgoing ? rel.to : rel.from;
+          const otherEntity = entities.find(e => e.id === otherEntityId);
+          if (!otherEntity) continue;
+
+          // If a relationship keyword (e.g. "placed", "contains", "from") was
+          // detected, only follow relationships whose name matches it.
+          if (relKeyword) {
+            const relNameNorm = rel.name.toLowerCase().replace(/\s+/g, '');
+            if (!relNameNorm.includes(relKeyword) && !relKeyword.includes(relNameNorm)) {
+              continue;
+            }
+          }
+
+          // Find relationship instances where the target is source (outgoing) or target (incoming).
+          const matchedRis = relationshipInstances.filter(ri => {
+            if (ri.relationshipId !== rel.id) return false;
+            return isOutgoing ? ri.sourceKey === targetKey : ri.targetKey === targetKey;
+          });
+
+          if (matchedRis.length === 0) continue;
+
+          relatedEntityIds.add(otherEntityId);
+          relatedRelIds.add(rel.id);
+
+          const otherInstances = entityInstances.filter(i => i.entityTypeId === otherEntityId);
+          const otherByKey = new Map(otherInstances.map(i => [instanceKey(otherEntity, i), i]));
+
+          for (const ri of matchedRis) {
+            const otherKey = isOutgoing ? ri.targetKey : ri.sourceKey;
+            const otherInst = otherByKey.get(otherKey);
+            const otherLabel = otherInst
+              ? instanceLabel(otherEntity, otherInst, otherKey)
+              : otherKey;
+            const attrs = ri.values
+              ? ` (${Object.entries(ri.values).map(([k, v]) => `${k}=${v}`).join(', ')})`
+              : '';
+            const arrow = isOutgoing ? '→' : '←';
+            lines.push(`  ${arrow} **${rel.name}** → ${otherEntity.icon} ${otherLabel}${attrs}`);
+          }
+        }
+      }
+
+      const header = `**${matchedTargetInstances.length} ${targetEntity.name}(s) matched "${filterValue}":**\n\n`;
+      return {
+        query,
+        result: header + lines.join('\n'),
+        highlightEntities: [targetEntity.id, ...Array.from(relatedEntityIds)],
+        highlightRelationships: Array.from(relatedRelIds),
+        interpretation: `Detected: instance-filter query for ${targetEntity.name} = ${filterValue}`,
+      };
+    }
+  }
+
+  // Relationship-name connection queries — return actual relationship instances
   for (const rel of relationships) {
     const relationNameNormalized = rel.name.toLowerCase().trim().replace(/\s+/g, ' ');
     const fromEntity = entities.find(e => e.id === rel.from);
@@ -188,9 +460,19 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
       normalizedNoPunctuation.includes(relationNameNormalized) &&
       (normalizedNoPunctuation.includes('connection') || normalizedNoPunctuation.includes('connections') || normalizedNoPunctuation.includes('relationship'))
     ) {
+      const matchedRelInstances = relationshipInstances.filter(ri => ri.relationshipId === rel.id);
+      const fromInstances = entityInstances.filter(i => i.entityTypeId === rel.from);
+      const toInstances = entityInstances.filter(i => i.entityTypeId === rel.to);
+      const links = (fromEntity && toEntity)
+        ? formatRelationshipLinks(fromEntity, toEntity, fromInstances, toInstances, matchedRelInstances, rel.name)
+        : '';
+      const summary = matchedRelInstances.length > 0
+        ? `**${rel.name}** connects **${fromEntity?.name ?? rel.from}** to **${toEntity?.name ?? rel.to}** (${rel.cardinality}).\n\n**${matchedRelInstances.length} link(s):**\n\n${links}`
+        : `**${rel.name}** connects **${fromEntity?.name ?? rel.from}** to **${toEntity?.name ?? rel.to}** (${rel.cardinality}).${rel.description ? `\n\n${rel.description}` : ''}\n\n_No sample relationship instances loaded._`;
+
       return {
         query,
-        result: `**${rel.name}** connects **${fromEntity?.name ?? rel.from}** to **${toEntity?.name ?? rel.to}** (${rel.cardinality}).${rel.description ? `\n\n${rel.description}` : ''}`,
+        result: summary,
         highlightEntities: [rel.from, rel.to],
         highlightRelationships: [rel.id],
         interpretation: `Detected: relationship-name query for ${rel.name}`
@@ -198,6 +480,7 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
     }
   }
 
+  // Entity-connection queries ("how does X connect / relate") — return real links
   for (const entity of entities) {
     const entityNameLower = entity.name.toLowerCase();
     
@@ -208,17 +491,25 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
       const relatedRels = relationships.filter(r => r.from === entity.id || r.to === entity.id);
       
       if (relatedRels.length > 0) {
-        const relList = relatedRels.map(rel => {
+        const fromInstances = entityInstances.filter(i => i.entityTypeId === entity.id);
+        const relBlocks = relatedRels.map(rel => {
           const isOutgoing = rel.from === entity.id;
           const otherEntityId = isOutgoing ? rel.to : rel.from;
           const otherEntity = entities.find(e => e.id === otherEntityId);
           const direction = isOutgoing ? '→' : '←';
-          return `• **${rel.name}** ${direction} ${otherEntity?.icon} ${otherEntity?.name} (${rel.cardinality})`;
+          const otherInstances = entityInstances.filter(i => i.entityTypeId === otherEntityId);
+          const matchedRis = relationshipInstances.filter(ri => ri.relationshipId === rel.id);
+          const header = `• **${rel.name}** ${direction} ${otherEntity?.icon} ${otherEntity?.name} (${rel.cardinality}) — ${matchedRis.length} link(s)`;
+          if (matchedRis.length === 0 || !otherEntity) return header;
+          const links = isOutgoing
+            ? formatRelationshipLinks(entity, otherEntity, fromInstances, otherInstances, matchedRis, rel.name)
+            : formatRelationshipLinks(otherEntity, entity, otherInstances, fromInstances, matchedRis, rel.name);
+          return `${header}\n  ${links.split('\n').join('\n  ')}`;
         }).join('\n');
 
         return {
           query,
-          result: `**${entity.name}** ${entity.icon} has ${relatedRels.length} connection(s):\n\n${relList}`,
+          result: `**${entity.name}** ${entity.icon} has ${relatedRels.length} connection(s):\n\n${relBlocks}`,
           highlightEntities: [entity.id, ...relatedRels.map(r => r.from === entity.id ? r.to : r.from)],
           highlightRelationships: relatedRels.map(r => r.id),
           interpretation: `Detected: relationship query for ${entity.name}`
@@ -242,13 +533,17 @@ export function processQuery(query: string, ontology: Ontology): QueryResponse {
     }
   }
 
-  // Counting queries
+  // Counting queries — return actual instance counts when available
   if (normalizedQuery.includes('how many')) {
     for (const entity of entities) {
       if (normalizedQuery.includes(entity.name.toLowerCase())) {
+        const count = entityInstances.filter(i => i.entityTypeId === entity.id).length;
+        const summary = count > 0
+          ? `**${count}** ${entity.name} record(s) in the sample data.`
+          : `The ontology defines the **${entity.name}** entity type.\n\n_In production, this query would count actual ${entity.name.toLowerCase()} records from the data platform._\n\nExample: "SELECT COUNT(*) FROM ${entity.name.toLowerCase()}s"`;
         return {
           query,
-          result: `The ontology defines the **${entity.name}** entity type.\n\n_In production, this query would count actual ${entity.name.toLowerCase()} records from the data platform._\n\nExample: "SELECT COUNT(*) FROM ${entity.name.toLowerCase()}s"`,
+          result: summary,
           highlightEntities: [entity.id],
           highlightRelationships: [],
           interpretation: `Detected: count query for ${entity.name}`
