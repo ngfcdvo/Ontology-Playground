@@ -1,0 +1,128 @@
+# NebulaGraph v3.8.0 Docker Compose (含 Studio + Console)
+# 启动: docker compose -f nebula-docker-compose.yml up -d
+# 停止: docker compose -f nebula-docker-compose.yml down
+# Studio: http://localhost:7001
+# graphd: localhost:9669
+
+services:
+  # ── 元数据服务 ──
+  metad0:
+    image: vesoft/nebula-metad:v3.8.0
+    container_name: nebula-metad0
+    environment:
+      USER: root
+      TZ: UTC
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=metad0
+      - --ws_ip=metad0
+      - --port=9559
+      - --data_path=/data/meta
+      - --log_dir=/logs
+    volumes:
+      - nebula-meta0:/data/meta
+      - nebula-logs-meta0:/logs
+    networks:
+      - nebula-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://metad0:19559/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── 图查询服务 ──
+  graphd0:
+    image: vesoft/nebula-graphd:v3.8.0
+    container_name: nebula-graphd0
+    environment:
+      USER: root
+      TZ: UTC
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=graphd0
+      - --ws_ip=graphd0
+      - --port=9669
+      - --log_dir=/logs
+    ports:
+      - "9669:9669"
+    volumes:
+      - nebula-logs-graphd0:/logs
+    networks:
+      - nebula-net
+    restart: unless-stopped
+    depends_on:
+      metad0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://graphd0:19669/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── 存储服务 ──
+  storaged0:
+    image: vesoft/nebula-storaged:v3.8.0
+    container_name: nebula-storaged0
+    environment:
+      USER: root
+      TZ: UTC
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=storaged0
+      - --ws_ip=storaged0
+      - --port=9779
+      - --data_path=/data/storage
+      - --log_dir=/logs
+    volumes:
+      - nebula-storage0:/data/storage
+      - nebula-logs-storaged0:/logs
+    networks:
+      - nebula-net
+    restart: unless-stopped
+    depends_on:
+      metad0:
+        condition: service_healthy
+
+  # ── nebula-console (持久化容器，后端通过 docker exec 调用) ──
+  console:
+    image: vesoft/nebula-console:v3.8.0
+    container_name: nebula-console
+    entrypoint: ["tail", "-f", "/dev/null"]
+    networks:
+      - nebula-net
+    restart: unless-stopped
+    depends_on:
+      graphd0:
+        condition: service_healthy
+
+  # ── NebulaGraph Studio (Web 可视化控制台) ──
+  studio:
+    image: vesoft/nebula-graph-studio:v3
+    container_name: nebula-studio
+    environment:
+      USER: root
+    ports:
+      - "7001:7001"
+    volumes:
+      - nebula-studio-uploads:/uploads
+      - nebula-studio-logs:/logs
+    networks:
+      - nebula-net
+    restart: unless-stopped
+    depends_on:
+      graphd0:
+        condition: service_healthy
+
+networks:
+  nebula-net:
+    driver: bridge
+
+volumes:
+  nebula-meta0:
+  nebula-logs-meta0:
+  nebula-logs-graphd0:
+  nebula-storage0:
+  nebula-logs-storaged0:
+  nebula-studio-uploads:
+  nebula-studio-logs:

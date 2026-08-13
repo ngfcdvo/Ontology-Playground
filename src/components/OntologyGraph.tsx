@@ -64,15 +64,126 @@ function instanceDisplayLabel(entity: EntityType, inst: EntityInstance): string 
   return key || inst.id;
 }
 
+/** Maximum nodes in the instance view to prevent browser performance issues. */
+const MAX_INSTANCE_NODES = 150;
+
+export interface InstanceViewInfo {
+  totalInstances: number;
+  displayedNodes: number;
+  truncated: boolean;
+}
+
 /** Build Cytoscape elements for the instance view: instance nodes + instance edges. */
 function buildInstanceElements(
   ontology: { entityTypes: EntityType[]; relationships: Array<{ id: string; name: string; from: string; to: string }> },
   entityInstances: EntityInstance[],
   relationshipInstances: RelationshipInstance[],
-) {
+): { elements: Array<{ data: Record<string, unknown> }>; truncated: boolean; totalInstances: number } {
   const entityById = new Map(ontology.entityTypes.map(e => [e.id, e]));
 
+  // ── 构建 instance → nodeKey 映射 ──
+  const nodeKeyByInstId = new Map<string, string>();
+  const instanceByKey = new Map<string, EntityInstance>();
+  for (const inst of entityInstances) {
+    const entity = entityById.get(inst.entityTypeId);
+    if (!entity) continue;
+    const key = instanceKeyValue(entity, inst);
+    const nodeKey = instanceNodeId(inst.entityTypeId, key);
+    nodeKeyByInstId.set(inst.id, nodeKey);
+    instanceByKey.set(nodeKey, inst);
+  }
+
+  // ── 从关系实例构建全量邻接图 ──
+  const adjacency = new Map<string, Set<string>>();
+  for (const ri of relationshipInstances) {
+    const rel = ontology.relationships.find(r => r.id === ri.relationshipId);
+    if (!rel) continue;
+    const source = instanceNodeId(rel.from, ri.sourceKey);
+    const target = instanceNodeId(rel.to, ri.targetKey);
+    if (!instanceByKey.has(source) || !instanceByKey.has(target)) continue;
+    if (!adjacency.has(source)) adjacency.set(source, new Set());
+    if (!adjacency.has(target)) adjacency.set(target, new Set());
+    adjacency.get(source)!.add(target);
+    adjacency.get(target)!.add(source);
+  }
+
+  // ── 数据量大时用 BFS 连通性采样，优先保留有关系的节点 ──
+  let instancesToRender = entityInstances;
+  let truncated = false;
+
+  if (entityInstances.length > MAX_INSTANCE_NODES) {
+    truncated = true;
+    const selected = new Set<string>();
+
+    // 1. 按度数降序排列有连接的节点
+    const connectedNodes = [...adjacency.entries()]
+      .sort((a, b) => b[1].size - a[1].size)
+      .map(([nk]) => nk);
+
+    // 2. BFS 从高度数种子节点扩展，填充连通子图
+    for (const seed of connectedNodes) {
+      if (selected.size >= MAX_INSTANCE_NODES) break;
+      if (selected.has(seed)) continue;
+      const queue = [seed];
+      while (queue.length > 0 && selected.size < MAX_INSTANCE_NODES) {
+        const node = queue.shift()!;
+        if (selected.has(node)) continue;
+        selected.add(node);
+        const neighbors = adjacency.get(node);
+        if (neighbors) {
+          // 邻居按度数排序，优先扩展高度数节点
+          const sorted = [...neighbors].sort((a, b) =>
+            (adjacency.get(b)?.size ?? 0) - (adjacency.get(a)?.size ?? 0)
+          );
+          for (const nb of sorted) {
+            if (!selected.has(nb) && selected.size + queue.length < MAX_INSTANCE_NODES) {
+              queue.push(nb);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. 如果仍有余量，补充孤立节点（保证每种实体类型有最低展示量）
+    if (selected.size < MAX_INSTANCE_NODES) {
+      const byType = new Map<string, string[]>();
+      for (const [nk, inst] of instanceByKey) {
+        if (selected.has(nk)) continue;
+        const list = byType.get(inst.entityTypeId) ?? [];
+        list.push(nk);
+        byType.set(inst.entityTypeId, list);
+      }
+      const perType = Math.max(2, Math.floor((MAX_INSTANCE_NODES - selected.size) / Math.max(1, byType.size)));
+      for (const [, keys] of byType) {
+        for (const nk of keys.slice(0, perType)) {
+          if (selected.size >= MAX_INSTANCE_NODES) break;
+          selected.add(nk);
+        }
+      }
+    }
+
+    instancesToRender = [...selected]
+      .map(nk => instanceByKey.get(nk)!)
+      .filter(Boolean);
+  }
+
   // Build instance nodes with stable ids: "inst:<entityTypeId>:<keyValue>"
+  const { nodes, edges } = buildNodesAndEdges(entityById, ontology.relationships, instancesToRender, relationshipInstances);
+
+  return {
+    elements: [...nodes, ...edges],
+    truncated,
+    totalInstances: entityInstances.length,
+  };
+}
+
+/** Inner builder: creates nodes and edges from a (possibly truncated) instance list. */
+function buildNodesAndEdges(
+  entityById: Map<string, EntityType>,
+  relationships: Array<{ id: string; name: string; from: string; to: string }>,
+  entityInstances: EntityInstance[],
+  relationshipInstances: RelationshipInstance[],
+) {
   const nodes = entityInstances.map(inst => {
     const entity = entityById.get(inst.entityTypeId);
     const fallbackColor = '#888888';
@@ -98,9 +209,9 @@ function buildInstanceElements(
 
   // Build instance edges from relationship instances.
   // sourceKey/targetKey reference identifier values; resolve to node ids.
-  const edges: Array<{ data: Record<string, unknown> }> = [];
+  const edges: Array<{ data: { id: string; source: string; target: string; label: string; [key: string]: unknown } }> = [];
   for (const ri of relationshipInstances) {
-    const rel = ontology.relationships.find(r => r.id === ri.relationshipId);
+    const rel = relationships.find(r => r.id === ri.relationshipId);
     if (!rel) continue;
     const fromEntity = entityById.get(rel.from);
     const toEntity = entityById.get(rel.to);
@@ -123,7 +234,7 @@ function buildInstanceElements(
     });
   }
 
-  return [...nodes, ...edges];
+  return { nodes, edges };
 }
 
 export function OntologyGraph() {
@@ -164,7 +275,14 @@ export function OntologyGraph() {
     graphViewMode,
     selectedInstanceKey,
     setGraphViewMode,
-    selectInstance
+    selectInstance,
+    dorisStatus,
+    dorisMessage,
+    loadFromDoris,
+    nebulaStatus,
+    nebulaMessage,
+    nebulaResult,
+    syncToNebula
   } = useAppStore();
 
   // Use refs for quest state to avoid re-creating the graph when quest changes
@@ -189,16 +307,26 @@ export function OntologyGraph() {
   // Initial theme colors for graph creation
   const initialThemeColors = useRef(themeColors);
 
+  // Instance view truncation info for UI warning
+  const [instanceTruncated, setInstanceTruncated] = useState(false);
+  const [instanceTotalCount, setInstanceTotalCount] = useState(0);
+  // NebulaGraph nGQL 查看弹窗
+  const [showNGQLModal, setShowNGQLModal] = useState(false);
+
   // Build graph elements from ontology — schema view (entity types) or
   // instance view (actual records linked by relationship instances).
   const buildElements = useCallback(() => {
     if (graphViewMode === 'instance') {
-      return buildInstanceElements(
+      const result = buildInstanceElements(
         currentOntology,
         entityInstances,
         relationshipInstances,
       );
+      setInstanceTruncated(result.truncated);
+      setInstanceTotalCount(result.totalInstances);
+      return result.elements;
     }
+    setInstanceTruncated(false);
     const nodes = currentOntology.entityTypes.map(entity => ({
       data: {
         id: entity.id,
@@ -730,6 +858,85 @@ export function OntologyGraph() {
           )}
         </button>
       </div>
+
+      {/* Doris 连接按钮 */}
+      <div className="doris-panel">
+        <button
+          className={`doris-btn doris-${dorisStatus}`}
+          onClick={loadFromDoris}
+          disabled={dorisStatus === 'connecting'}
+          title={dorisMessage || '从 Doris 加载实例数据'}
+        >
+          {dorisStatus === 'connecting' ? '⏳ 加载中...' : dorisStatus === 'connected' ? '✅ 已连接 Doris' : dorisStatus === 'error' ? '❌ Doris 错误' : '🔌 连接 Doris'}
+        </button>
+      </div>
+
+      {/* NebulaGraph 同步按钮 */}
+      <div className="nebula-panel">
+        <button
+          className={`nebula-btn nebula-${nebulaStatus}`}
+          onClick={syncToNebula}
+          disabled={nebulaStatus === 'syncing' || entityInstances.length === 0}
+          title={nebulaMessage || '同步实例数据到 NebulaGraph 图数据库'}
+        >
+          {nebulaStatus === 'syncing' ? '⏳ 同步中...' : nebulaStatus === 'synced' ? '✅ 已同步 NebulaGraph' : nebulaStatus === 'error' ? '❌ 同步失败' : '🔗 同步到 NebulaGraph'}
+        </button>
+        {nebulaStatus === 'synced' && nebulaResult && (
+          <button
+            className="nebula-btn nebula-view-ngql"
+            onClick={() => setShowNGQLModal(true)}
+            title="查看生成的 nGQL 脚本"
+          >
+            📄 查看 nGQL
+          </button>
+        )}
+      </div>
+
+      {/* NebulaGraph nGQL 脚本弹窗 */}
+      {showNGQLModal && nebulaResult && (
+        <div className="ngql-modal-overlay" onClick={() => setShowNGQLModal(false)}>
+          <div className="ngql-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="ngql-modal-header">
+              <h3>NebulaGraph nGQL 脚本</h3>
+              <button className="ngql-modal-close" onClick={() => setShowNGQLModal(false)}>✕</button>
+            </div>
+            <div className="ngql-modal-tabs">
+              <details open>
+                <summary>Schema DDL（{nebulaResult.steps.find(s => s.step === 'schema-ngql') ? '已生成' : '—'}）</summary>
+                <pre className="ngql-code">{nebulaResult.schemaNGQL}</pre>
+              </details>
+              <details>
+                <summary>Data DML（{nebulaResult.vertexCount} 点, {nebulaResult.edgeCount} 边）</summary>
+                <pre className="ngql-code">{nebulaResult.dataNGQL}</pre>
+              </details>
+            </div>
+            <div className="ngql-modal-footer">
+              <div className="ngql-sync-status">
+                {nebulaResult.steps.map((s, i) => (
+                  <div key={i} className={`ngql-step ngql-step-${s.status}`}>
+                    <span>{s.status === 'ok' ? '✅' : s.status === 'error' ? '❌' : s.status === 'skipped' ? '⏭️' : '✓'} {s.step}</span>
+                    {s.error && <span className="ngql-step-error">{s.error}</span>}
+                  </div>
+                ))}
+              </div>
+              <button
+                className="ngql-copy-btn"
+                onClick={() => {
+                  navigator.clipboard.writeText(nebulaResult.schemaNGQL + '\n\n' + nebulaResult.dataNGQL);
+                }}
+              >
+                📋 复制全部
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {graphViewMode === 'instance' && instanceTruncated && (
+        <div className="instance-truncated-warning" title={`数据量过大，仅显示 ${MAX_INSTANCE_NODES} 个节点（共 ${instanceTotalCount} 条）`}>
+          <span>⚠️ 仅显示前 {MAX_INSTANCE_NODES} 个节点（共 {instanceTotalCount} 条），使用查询面板可查看完整数据</span>
+        </div>
+      )}
 
       <div className="graph-controls">
         <button className="graph-control-btn" onClick={handleZoomIn} title="Zoom In">

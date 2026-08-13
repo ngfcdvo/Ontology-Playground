@@ -1,0 +1,16 @@
+{
+  "name": "ontology-playground-server",
+  "version": "1.0.0",
+  "description": "Backend API proxy for Doris queries",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "mysql2": "^3.11.0"
+  }
+}

@@ -2,8 +2,11 @@ import { create } from 'zustand';
 import type { Quest } from '../data/quests';
 import { quests as defaultQuests } from '../data/quests';
 import type { Ontology, DataBinding, EntityInstance, RelationshipInstance } from '../data/ontology';
-import { cosmicCoffeeOntology, sampleBindings, sampleInstances, sampleRelationshipInstances } from '../data/ontology';
+import { businessOntology, businessBindings, businessInstances, businessRelationshipInstances } from '../data/businessOntology';
 import { generateQuestsForOntology } from '../data/questGenerator';
+import { loadInstancesFromDoris, checkDorisHealth } from '../lib/dorisClient';
+import { syncToNebula as syncToNebulaApi, getNebulaConfig } from '../lib/nebulaClient';
+import type { SyncResult } from '../lib/nebulaClient';
 
 export type ThemeId = 'dark' | 'light' | 'aurora' | 'crimson';
 
@@ -86,10 +89,23 @@ interface AppState {
   queryInput: string;
   queryResult: string | null;
   
+  // Doris Connection State
+  dorisStatus: 'idle' | 'connecting' | 'connected' | 'error';
+  dorisMessage: string | null;
+  
+  // NebulaGraph Sync State
+  nebulaStatus: 'idle' | 'syncing' | 'synced' | 'error';
+  nebulaMessage: string | null;
+  nebulaResult: SyncResult | null;
+  
   // Ontology Actions
   loadOntology: (ontology: Ontology, bindings?: DataBinding[]) => void;
   resetToDefault: () => void;
   exportOntology: () => string;
+  loadFromDoris: () => Promise<void>;
+  checkDoris: () => Promise<void>;
+  syncToNebula: () => Promise<void>;
+  checkNebula: () => Promise<void>;
   
   // Actions
   selectEntity: (id: string | null) => void;
@@ -116,11 +132,11 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  // Initial Ontology State
-  currentOntology: cosmicCoffeeOntology,
-  dataBindings: sampleBindings,
-  entityInstances: sampleInstances,
-  relationshipInstances: sampleRelationshipInstances,
+  // Initial Ontology State — 默认使用业务本体(基于 Doris 数仓)
+  currentOntology: businessOntology,
+  dataBindings: businessBindings,
+  entityInstances: businessInstances,
+  relationshipInstances: businessRelationshipInstances,
   
   // Initial UI State
   selectedEntityId: null,
@@ -144,7 +160,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Initial Query State
   queryInput: '',
   queryResult: null,
-  
+
+  // Initial Doris State
+  dorisStatus: 'idle',
+  dorisMessage: null,
+
+  // Initial NebulaGraph State
+  nebulaStatus: 'idle',
+  nebulaMessage: null,
+  nebulaResult: null,
+
   // Ontology Actions
   loadOntology: (ontology, bindings = []) => {
     // Generate new quests based on the loaded ontology
@@ -171,10 +196,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   
   resetToDefault: () => set({
-    currentOntology: cosmicCoffeeOntology,
-    dataBindings: sampleBindings,
-    entityInstances: sampleInstances,
-    relationshipInstances: sampleRelationshipInstances,
+    currentOntology: businessOntology,
+    dataBindings: businessBindings,
+    entityInstances: businessInstances,
+    relationshipInstances: businessRelationshipInstances,
     selectedEntityId: null,
     selectedRelationshipId: null,
     highlightedEntities: [],
@@ -190,6 +215,85 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportOntology: () => {
     const { currentOntology, dataBindings } = get();
     return JSON.stringify({ ontology: currentOntology, bindings: dataBindings }, null, 2);
+  },
+
+  // ── Doris 数据加载 ──
+  checkDoris: async () => {
+    set({ dorisStatus: 'connecting', dorisMessage: null });
+    try {
+      const result = await checkDorisHealth();
+      if (result.status === 'ok') {
+        set({ dorisStatus: 'connected', dorisMessage: `已连接: ${result.doris?.host}:${result.doris?.port}` });
+      } else {
+        set({ dorisStatus: 'error', dorisMessage: result.message || '连接失败' });
+      }
+    } catch (err) {
+      set({ dorisStatus: 'error', dorisMessage: (err as Error).message });
+    }
+  },
+
+  loadFromDoris: async () => {
+    const { currentOntology, dataBindings } = get();
+    set({ dorisStatus: 'connecting', dorisMessage: '正在从 Doris 加载数据...' });
+    try {
+      const result = await loadInstancesFromDoris({
+        entityTypes: currentOntology.entityTypes,
+        relationships: currentOntology.relationships,
+        bindings: dataBindings,
+        limitPerEntity: 200,
+      });
+      set({
+        entityInstances: result.entityInstances,
+        relationshipInstances: result.relationshipInstances,
+        dorisStatus: 'connected',
+        dorisMessage: `已加载 ${result.entityInstances.length} 条实例，${result.relationshipInstances.length} 条关系` +
+          (result.errors.length > 0 ? `（${result.errors.length} 个实体加载失败）` : ''),
+      });
+    } catch (err) {
+      set({ dorisStatus: 'error', dorisMessage: (err as Error).message });
+    }
+  },
+
+  // ── NebulaGraph 同步 ──
+  checkNebula: async () => {
+    set({ nebulaStatus: 'syncing', nebulaMessage: '检查 NebulaGraph...' });
+    try {
+      const config = await getNebulaConfig();
+      if (config.consoleAvailable) {
+        set({ nebulaStatus: 'synced', nebulaMessage: `NebulaGraph 可用: ${config.host}:${config.port} / ${config.space}` });
+      } else {
+        set({ nebulaStatus: 'idle', nebulaMessage: `nebula-console 不可用（${config.host}:${config.port}），将生成 nGQL 脚本` });
+      }
+    } catch (err) {
+      set({ nebulaStatus: 'error', nebulaMessage: (err as Error).message });
+    }
+  },
+
+  syncToNebula: async () => {
+    const { currentOntology, entityInstances, relationshipInstances } = get();
+    if (entityInstances.length === 0) {
+      set({ nebulaStatus: 'error', nebulaMessage: '无实例数据，请先连接 Doris 加载数据' });
+      return;
+    }
+    set({ nebulaStatus: 'syncing', nebulaMessage: '正在同步到 NebulaGraph...', nebulaResult: null });
+    try {
+      const result = await syncToNebulaApi(currentOntology, entityInstances, relationshipInstances);
+      if (result.success) {
+        set({
+          nebulaStatus: 'synced',
+          nebulaMessage: `同步完成: ${result.vertexCount} 点, ${result.edgeCount} 边`,
+          nebulaResult: result,
+        });
+      } else {
+        set({
+          nebulaStatus: 'synced',
+          nebulaMessage: `nGQL 已生成 (${result.vertexCount} 点, ${result.edgeCount} 边)，nebula-console 不可用需手动执行`,
+          nebulaResult: result,
+        });
+      }
+    } catch (err) {
+      set({ nebulaStatus: 'error', nebulaMessage: (err as Error).message });
+    }
   },
   
   // UI Actions

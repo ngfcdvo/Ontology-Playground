@@ -33,6 +33,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // Doris API proxy — 转发到后端 server/index.js
+      '/api': {
+        target: process.env.VITE_API_TARGET || 'http://localhost:3001',
+        changeOrigin: true,
+      },
       // GitHub OAuth device-flow endpoints don't support CORS — proxy in dev
       '/__github/login/device/code': {
         target: 'https://github.com',

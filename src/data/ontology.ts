@@ -22,6 +22,10 @@ export interface Relationship {
   cardinality: 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many';
   description?: string;
   attributes?: RelationshipAttribute[];
+  /** Property name(s) on the `from` entity that form the join key (foreign key). */
+  joinFrom?: string[];
+  /** Property name(s) on the `to` entity that form the join key (referenced column). */
+  joinTo?: string[];
 }
 
 export interface EntityType {

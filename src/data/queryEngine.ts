@@ -211,11 +211,6 @@ function matchInstanceFilterQuery(
           // e.g. "orders placed for Arif" → keyword "placed"
           let relKeyword: string | undefined;
           if (i >= 2) {
-            const beforePrep = words.slice(Math.max(0, i - 3), i).join(' ');
-            // Match against relationship names (normalized: remove spaces)
-            for (const e of entities) {
-              // no relationship list here; we'll just capture the word before
-            }
             // Simpler: grab the word immediately before the preposition
             const prev = words[i - 1];
             if (prev && prev.length > 2 && !['show', 'list', 'what', 'which', 'all', 'the', 'a', 'an'].includes(prev)) {

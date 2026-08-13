@@ -144,6 +144,12 @@ export function serializeToRDF(
     rdf += `        <ont:cardinality>${escapeXml(rel.cardinality)}</ont:cardinality>\n`;
     rdf += `        <ont:fromEntityId>${escapeXml(rel.from)}</ont:fromEntityId>\n`;
     rdf += `        <ont:toEntityId>${escapeXml(rel.to)}</ont:toEntityId>\n`;
+    if (rel.joinFrom && rel.joinFrom.length > 0) {
+      rdf += `        <ont:joinFrom>${escapeXml(rel.joinFrom.join(','))}</ont:joinFrom>\n`;
+    }
+    if (rel.joinTo && rel.joinTo.length > 0) {
+      rdf += `        <ont:joinTo>${escapeXml(rel.joinTo.join(','))}</ont:joinTo>\n`;
+    }
     rdf += '    </owl:ObjectProperty>\n\n';
 
     // Relationship attributes as separate data properties

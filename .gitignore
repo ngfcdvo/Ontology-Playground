@@ -36,3 +36,7 @@ release-review/
 data/codemind*.db
 **/codemind*.db
 .codemind/
+
+# Backend secrets
+server/.env
+server/node_modules/

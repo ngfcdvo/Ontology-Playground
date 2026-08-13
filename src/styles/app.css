@@ -756,7 +756,220 @@ body {
   color: #fff;
 }
 
-.legend-count {
+.instance-truncated-warning {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(214, 120, 17, 0.9);
+  color: #fff;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  z-index: 10;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.doris-panel {
+  position: absolute;
+  top: 12px;
+  right: 70px;
+  z-index: 10;
+}
+
+.doris-btn {
+  padding: 6px 14px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.doris-btn:hover:not(:disabled) {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.doris-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.doris-connected { border-color: #107c10; color: #107c10; }
+.doris-error { border-color: #d13438; color: #d13438; }
+.doris-connecting { border-color: #0078d4; color: #0078d4; }
+.doris-idle { border-color: #ddd; color: #444; }
+
+/* ── NebulaGraph 面板 ── */
+.nebula-panel {
+  position: absolute;
+  top: 50px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.nebula-btn {
+  padding: 6px 14px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.nebula-btn:hover:not(:disabled) {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.nebula-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.nebula-synced { border-color: #0078d4; color: #0078d4; }
+.nebula-error { border-color: #d13438; color: #d13438; }
+.nebula-syncing { border-color: #0078d4; color: #0078d4; }
+.nebula-idle { border-color: #ddd; color: #444; }
+.nebula-view-ngql {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-color: #0078d4;
+  color: #0078d4;
+}
+
+/* ── nGQL 弹窗 ── */
+.ngql-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ngql-modal {
+  background: var(--bg-elevated, #fff);
+  border-radius: 10px;
+  max-width: 800px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.ngql-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.ngql-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ngql-modal-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--text-secondary, #666);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.ngql-modal-close:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+}
+
+.ngql-modal-tabs {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 20px;
+}
+
+.ngql-modal-tabs details {
+  margin-bottom: 8px;
+}
+
+.ngql-modal-tabs summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding: 8px 0;
+  user-select: none;
+}
+
+.ngql-code {
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 300px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ngql-modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color, #e0e0e0);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ngql-sync-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.ngql-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ngql-step-error {
+  color: #d13438;
+  font-size: 11px;
+}
+
+.ngql-copy-btn {
+  padding: 6px 16px;
+  border: 1px solid #0078d4;
+  border-radius: 6px;
+  background: #0078d4;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ngql-copy-btn:hover {
+  background: #106ebe;
+}
   margin-left: auto;
   padding-left: 8px;
   font-size: 11px;
